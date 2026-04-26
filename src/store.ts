@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'crypto'
 import { Pool } from 'pg'
 
-const SCHEMA_VERSION = 8
+const SCHEMA_VERSION = 9
 
 export type MemoryType =
   | 'event'
   | 'state'
+  | 'instruction'
   | 'summary'
 
 export type MemoryRow = {
@@ -19,6 +20,7 @@ export type MemoryRow = {
   last_touched_seq: number
   created_at: Date
   similarity?: number
+  lexical_score?: number
   entity_matches?: number
 }
 
@@ -117,6 +119,24 @@ function normalizeSemanticKey(text: string): string {
     .trim()
 }
 
+const LEXICAL_STOPWORDS = new Set([
+  'a', 'an', 'and', 'are', 'as', 'at', 'be', 'before', 'by', 'for', 'from', 'how',
+  'i', 'in', 'is', 'it', 'me', 'my', 'of', 'on', 'or', 'our', 'that', 'the', 'their',
+  'them', 'they', 'this', 'to', 'user', 'was', 'we', 'were', 'what', 'when', 'where',
+  'who', 'why', 'with', 'would', 'you', 'your',
+])
+
+function buildLexicalTsQuery(text: string): string {
+  const tokens = text
+    .toLowerCase()
+    .replace(/[^\w\s.-]/g, ' ')
+    .split(/\s+/)
+    .map(token => token.trim())
+    .filter(token => token.length >= 2 && !LEXICAL_STOPWORDS.has(token))
+
+  return Array.from(new Set(tokens)).map(token => `${token}:*`).join(' | ')
+}
+
 function memoryId(scopeId: string, text: string): string {
   return createHash('sha256')
     .update(`${scopeId}::${normalizeSemanticKey(text)}`)
@@ -125,6 +145,7 @@ function memoryId(scopeId: string, text: string): string {
 
 function normalizeMemoryType(value: string | null | undefined): MemoryType {
   if (value === 'event') return 'event'
+  if (value === 'instruction') return 'instruction'
   if (value === 'summary') return 'summary'
   return 'state'
 }
@@ -279,6 +300,19 @@ export class Store {
         `)
       }
 
+      if (currentVersion < 9) {
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS mem_memories_text_fts_idx
+          ON mem_memories
+          USING gin (to_tsvector('simple', regexp_replace(text, '^\\[(fact|event)\\]\\s*', '', 'i')))
+        `)
+        await client.query(`
+          CREATE INDEX IF NOT EXISTS mem_memories_scope_type_active_idx
+          ON mem_memories (scope_id, memory_type, last_touched_seq DESC)
+          WHERE superseded_by IS NULL
+        `)
+      }
+
       if (currentVersion < SCHEMA_VERSION) {
         await client.query('DELETE FROM mem_schema')
         await client.query('INSERT INTO mem_schema (version) VALUES ($1)', [SCHEMA_VERSION])
@@ -333,6 +367,51 @@ export class Store {
       [scopeId, `[${queryEmbedding.join(',')}]`, limit]
     )
     return result.rows
+  }
+
+  async searchLexical(
+    scopeId: string,
+    query: string,
+    limit: number,
+    options: { memoryType?: MemoryType } = {}
+  ): Promise<MemoryRow[]> {
+    const lexicalQuery = buildLexicalTsQuery(query)
+    if (!lexicalQuery) return []
+
+    const clauses = [
+      `scope_id = $1`,
+      `superseded_by IS NULL`,
+      `to_tsvector('simple', regexp_replace(text, '^\\[(fact|event)\\]\\s*', '', 'i')) @@ to_tsquery('simple', $2)`,
+    ]
+    const params: Array<string | number> = [scopeId, lexicalQuery, limit]
+
+    if (options.memoryType) {
+      clauses.push(`memory_type = $4`)
+      params.push(options.memoryType)
+    }
+
+    const result = await this.pool.query<MemoryRow & { lexical_score: string }>(
+      `SELECT id, text, memory_type, scratchpad_key, superseded_by, superseded_at, reinforcement_count, last_touched_seq::integer, created_at,
+              ts_rank_cd(
+                to_tsvector('simple', regexp_replace(text, '^\\[(fact|event)\\]\\s*', '', 'i')),
+                to_tsquery('simple', $2)
+              )::text AS lexical_score
+       FROM mem_memories
+       WHERE ${clauses.join('\n         AND ')}
+       ORDER BY ts_rank_cd(
+         to_tsvector('simple', regexp_replace(text, '^\\[(fact|event)\\]\\s*', '', 'i')),
+         to_tsquery('simple', $2)
+       ) DESC,
+       last_touched_seq DESC
+       LIMIT $3`,
+      params
+    )
+
+    return result.rows.map(row => ({
+      ...row,
+      memory_type: normalizeMemoryType(row.memory_type),
+      lexical_score: parseFloat(row.lexical_score) || 0,
+    }))
   }
 
   async upsertEntities(scopeId: string, memoryId: string, entities: string[]): Promise<void> {

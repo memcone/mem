@@ -109,6 +109,43 @@ describe('Store', () => {
     expect(results[0].entity_matches).toBeGreaterThanOrEqual(1)
   })
 
+  it('retrieves exact facts through lexical search even when embeddings are not involved', async () => {
+    const scopeId = `lexical-${Date.now()}`
+    await store.insert(
+      scopeId,
+      ['[fact] Jira logged a TypeError in autocomplete.js', '[fact] User prefers dark mode'],
+      [Array(1536).fill(0.4) as number[], Array(1536).fill(0.6) as number[]],
+      1
+    )
+
+    const results = await store.searchLexical(scopeId, 'TypeError autocomplete.js', 10)
+
+    expect(results.map(result => result.text)).toContain('[fact] Jira logged a TypeError in autocomplete.js')
+    expect((results[0].lexical_score ?? 0)).toBeGreaterThan(0)
+  })
+
+  it('can filter lexical retrieval to instruction memories', async () => {
+    const scopeId = `lexical-instruction-${Date.now()}`
+    await store.insert(
+      scopeId,
+      ['[fact] user should use TypeScript for this project', '[fact] user likes fast tooling'],
+      [Array(1536).fill(0.3) as number[], Array(1536).fill(0.5) as number[]],
+      1,
+      [
+        { memoryType: 'instruction', scratchpadKey: 'instruction:typescript for this project' },
+        { memoryType: 'state', scratchpadKey: 'state:fast tooling' },
+      ]
+    )
+
+    const results = await store.searchLexical(scopeId, 'what should we use for this project', 10, {
+      memoryType: 'instruction',
+    })
+
+    expect(results).toHaveLength(1)
+    expect(results[0].memory_type).toBe('instruction')
+    expect(results[0].text).toBe('[fact] user should use TypeScript for this project')
+  })
+
   it('stores memory types and scratchpad updates', async () => {
     const scopeId = `typed-${Date.now()}`
     const ids = await store.insert(

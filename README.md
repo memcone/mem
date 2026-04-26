@@ -234,6 +234,23 @@ Environment variables used by local development:
 - `OPENAI_API_KEY`
 - optional `REDIS_URL`
 
+### Local benchmark infra
+
+If you want to run BEAM locally without spending Neon compute, use the local Docker stack:
+
+```bash
+pnpm infra:up
+```
+
+This starts:
+
+- local Postgres + `pgvector` on `127.0.0.1:54329`
+- local Redis on `127.0.0.1:6380`
+
+Then run `mem` with a local benchmark env file and point the benchmark runner at `http://127.0.0.1:3000`.
+
+See [docs/local-benchmark-stack.md](./docs/local-benchmark-stack.md).
+
 ---
 
 ## Repo Layout

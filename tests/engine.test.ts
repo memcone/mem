@@ -11,6 +11,7 @@ function makeStore(): Store {
     init: vi.fn().mockResolvedValue(undefined),
     insert: vi.fn().mockResolvedValue(['id-1']),
     search: vi.fn().mockResolvedValue([]),
+    searchLexical: vi.fn().mockResolvedValue([]),
     searchByEntityMatches: vi.fn().mockResolvedValue([]),
     getTopicVersions: vi.fn().mockResolvedValue([]),
     upsertEntities: vi.fn().mockResolvedValue(undefined),
@@ -89,9 +90,8 @@ describe('engine.remember', () => {
     ;(llm.extract as ReturnType<typeof vi.fn>).mockResolvedValue([
       'user moved to Berlin last year',
     ])
-    ;(store.insert as ReturnType<typeof vi.fn>).mockResolvedValue(['id-event', 'id-fact'])
+    ;(store.insert as ReturnType<typeof vi.fn>).mockResolvedValue(['id-event'])
     ;(llm.embedMany as ReturnType<typeof vi.fn>).mockResolvedValue([
-      Array(1536).fill(0.1),
       Array(1536).fill(0.1),
     ])
 
@@ -99,11 +99,10 @@ describe('engine.remember', () => {
 
     expect(store.insert).toHaveBeenCalledWith(
       'user-1',
-      ['[event] User moved to Berlin last year', '[fact] user moved to Berlin last year'],
-      [Array(1536).fill(0.1), Array(1536).fill(0.1)],
+      ['[event] User moved to Berlin last year'],
+      [Array(1536).fill(0.1)],
       3,
       [
-        { memoryType: 'event', scratchpadKey: null },
         { memoryType: 'event', scratchpadKey: null },
       ]
     )
@@ -126,6 +125,70 @@ describe('engine.remember', () => {
       ['[fact] user has an API key for the project'],
       [Array(1536).fill(0.1)],
       4,
+      [{ memoryType: 'state', scratchpadKey: 'state:api_key' }]
+    )
+  })
+
+  it('stores imperative rule-like memories as instruction type', async () => {
+    const { remember } = await import('../src/engine')
+    ;(llm.extract as ReturnType<typeof vi.fn>).mockResolvedValue([
+      'user should use TypeScript for this project',
+    ])
+    ;(store.insert as ReturnType<typeof vi.fn>).mockResolvedValue(['id-instruction'])
+    ;(llm.embedMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      Array(1536).fill(0.1),
+    ])
+
+    await remember(store, llm, 'user-1', 'We should use TypeScript for this project', 6)
+
+    expect(store.insert).toHaveBeenCalledWith(
+      'user-1',
+      ['[fact] user should use TypeScript for this project'],
+      [Array(1536).fill(0.1)],
+      6,
+      [{ memoryType: 'instruction', scratchpadKey: 'instruction:typescript for this project' }]
+    )
+  })
+
+  it('keeps descriptive usage facts as state instead of instruction', async () => {
+    const { remember } = await import('../src/engine')
+    ;(llm.extract as ReturnType<typeof vi.fn>).mockResolvedValue([
+      'user uses Next.js for the project',
+    ])
+    ;(store.insert as ReturnType<typeof vi.fn>).mockResolvedValue(['id-state'])
+    ;(llm.embedMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      Array(1536).fill(0.1),
+    ])
+
+    await remember(store, llm, 'user-1', 'We use Next.js for the project', 7)
+
+    expect(store.insert).toHaveBeenCalledWith(
+      'user-1',
+      ['[fact] user uses Next.js for the project'],
+      [Array(1536).fill(0.1)],
+      7,
+      [{ memoryType: 'state', scratchpadKey: 'state:next js project' }]
+    )
+  })
+
+  it('deduplicates same-turn facts that map to the same stable topic key', async () => {
+    const { remember } = await import('../src/engine')
+    ;(llm.extract as ReturnType<typeof vi.fn>).mockResolvedValue([
+      'user has an API key for the project',
+      'user has API key for this project',
+    ])
+    ;(store.insert as ReturnType<typeof vi.fn>).mockResolvedValue(['id-api'])
+    ;(llm.embedMany as ReturnType<typeof vi.fn>).mockResolvedValue([
+      Array(1536).fill(0.1),
+    ])
+
+    await remember(store, llm, 'user-1', 'I have an API key for this project', 8)
+
+    expect(store.insert).toHaveBeenCalledWith(
+      'user-1',
+      ['[fact] user has an API key for the project'],
+      [Array(1536).fill(0.1)],
+      8,
       [{ memoryType: 'state', scratchpadKey: 'state:api_key' }]
     )
   })
@@ -158,6 +221,22 @@ describe('engine.remember', () => {
 
     expect(llm.extract).toHaveBeenCalledWith(
       JSON.stringify({ action: 'clicked', target: 'dark mode toggle' })
+    )
+  })
+
+  it('preserves assistant role context for state-changing object events', async () => {
+    const { remember } = await import('../src/engine')
+
+    await remember(
+      store,
+      llm,
+      'user-1',
+      { role: 'assistant', content: 'The API key is configured for this project.' },
+      2
+    )
+
+    expect(llm.extract).toHaveBeenCalledWith(
+      'assistant: The API key is configured for this project.'
     )
   })
 
@@ -333,6 +412,23 @@ describe('engine.recall', () => {
 
     expect(result.split('\n')[0]).toContain('Alice owns Project Atlas')
   })
+
+  it('surfaces exact facts from lexical retrieval when semantic retrieval misses them', async () => {
+    const { recall } = await import('../src/engine')
+    ;(store.search as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(store.searchLexical as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        ...makeMemoryRow('[fact] Jira logged a TypeError in autocomplete.js', 2, 9),
+        lexical_score: 0.8,
+      },
+    ])
+    ;(store.searchByEntityMatches as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(store.getScratchpad as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const result = await recall(store, llm, 'user-1', 'What bugs were logged besides the TypeError in autocomplete.js?', 10)
+
+    expect(result).toContain('Jira logged a TypeError in autocomplete.js')
+  })
 })
 
 describe('engine.context', () => {
@@ -420,6 +516,66 @@ describe('engine.context', () => {
     const result = await context(store, llm, 'user-1', 'what theme should we use?', 9)
 
     expect(result.result).toContain('user prefers dark mode')
+  })
+
+  it('prioritizes instruction memories for rule-like questions', async () => {
+    const { context } = await import('../src/engine')
+    ;(store.search as ReturnType<typeof vi.fn>).mockResolvedValue([
+      {
+        id: 'instruction',
+        text: '[fact] user should use TypeScript for this project',
+        memory_type: 'instruction',
+        scratchpad_key: 'instruction:typescript for this project',
+        reinforcement_count: 2,
+        last_touched_seq: 9,
+        created_at: new Date(),
+      },
+      {
+        id: 'state',
+        text: '[fact] user likes fast tooling',
+        memory_type: 'state',
+        scratchpad_key: 'state:fast tooling',
+        reinforcement_count: 3,
+        last_touched_seq: 8,
+        created_at: new Date(),
+      },
+    ])
+    ;(store.searchByEntityMatches as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(store.getScratchpad as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const result = await context(store, llm, 'user-1', 'what should we use for this project?', 9)
+
+    expect(result.query_type).toBe('rule')
+    expect(result.result).toContain('## Rules & Preferences')
+    expect(result.result).toContain('user should use TypeScript for this project')
+    expect(result.result.indexOf('user should use TypeScript for this project')).toBeLessThan(
+      result.result.indexOf('user likes fast tooling')
+    )
+  })
+
+  it('can load instruction memories from lexical retrieval for rule-like questions', async () => {
+    const { context } = await import('../src/engine')
+    ;(store.search as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(store.searchLexical as ReturnType<typeof vi.fn>)
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([
+        {
+          id: 'instruction-lexical',
+          text: '[fact] user should use TypeScript for this project',
+          memory_type: 'instruction',
+          scratchpad_key: 'instruction:typescript for this project',
+          lexical_score: 0.9,
+          reinforcement_count: 2,
+          last_touched_seq: 9,
+          created_at: new Date(),
+        },
+      ])
+    ;(store.searchByEntityMatches as ReturnType<typeof vi.fn>).mockResolvedValue([])
+    ;(store.getScratchpad as ReturnType<typeof vi.fn>).mockResolvedValue([])
+
+    const result = await context(store, llm, 'user-1', 'what should i use for this project?', 9)
+
+    expect(result.result).toContain('user should use TypeScript for this project')
   })
 
   it('retrieves both active and historical topic versions for conflict questions', async () => {

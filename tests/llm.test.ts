@@ -86,6 +86,22 @@ describe('OpenAISemanticLLM', () => {
       expect(result).toEqual(['user dislikes dashboards', 'user prefers minimal UI'])
     })
 
+    it('asks for exact technical details instead of vague summaries', async () => {
+      const { chatCreate } = getMocks()
+      chatCreate.mockResolvedValue({
+        choices: [{ message: { content: 'project uses Next.js\nbug is in autocomplete.js' } }],
+      })
+
+      await llm.extract('assistant: The project uses Next.js and the bug is in autocomplete.js')
+
+      const systemPrompt = chatCreate.mock.calls[0]?.[0]?.messages?.[0]?.content as string
+      expect(systemPrompt).toContain('Preserve exact technical details')
+      expect(systemPrompt).toContain('assistant-confirmed or tool-confirmed facts')
+      expect(systemPrompt).toContain('Do not collapse multiple concrete details into one vague summary')
+      expect(systemPrompt).toContain('Merge closely related details from the same rule, task, or project state into one fact')
+      expect(systemPrompt).toContain('Avoid producing near-duplicate lines that only differ by minor wording')
+    })
+
     it('filters out empty lines', async () => {
       const { chatCreate } = getMocks()
       chatCreate.mockResolvedValue({

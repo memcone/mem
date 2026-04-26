@@ -70,13 +70,20 @@ const MAX_FACT_EMBED_TOKENS = 7000
 function normalizeEvent(event: string | object): string {
   if (typeof event === 'string') return event
   const candidate = event as Record<string, unknown>
+  const role = typeof candidate.role === 'string' ? candidate.role.trim().toLowerCase() : null
   const textLike = [candidate.text, candidate.content, candidate.message, candidate.event]
     .find(value => typeof value === 'string' && value.trim().length > 0)
 
-  if (typeof textLike === 'string') return textLike
+  if (typeof textLike === 'string') {
+    const text = textLike.trim()
+    if (role && role !== 'user') return `${role}: ${text}`
+    return text
+  }
 
   if (typeof candidate.role === 'string' && typeof candidate.content === 'string') {
-    return candidate.content
+    return role && role !== 'user'
+      ? `${role}: ${candidate.content}`
+      : candidate.content
   }
 
   return JSON.stringify(event)
@@ -121,26 +128,30 @@ function stripPrefix(text: string): string {
   return text.replace(/^\[(?:fact|event)\]\s*/i, '').trim()
 }
 
+function stripRolePrefix(text: string): string {
+  return text.replace(/^(?:assistant|system|tool|user):\s*/i, '').trim()
+}
+
 function syntheticScratchpadId(scopeId: string, key: string): string {
   return `scratchpad:${scopeId}:${key}`
 }
 
 function isLowSignalTurn(text: string): boolean {
-  const normalized = normalizeWhitespace(text).toLowerCase()
+  const normalized = normalizeWhitespace(stripRolePrefix(text)).toLowerCase()
   if (!normalized) return true
   if (normalized.length > 24) return false
   return /^(ok|okay|kk|sure|nice|cool|great|thanks|thank you|got it|understood|i see|makes sense|sounds good|all good|perfect|hmm|hm|yep|yes|nope|nah)[.!?]*$/.test(normalized)
 }
 
 function hasMemorySignal(text: string): boolean {
-  const lower = normalizeWhitespace(text).toLowerCase()
+  const lower = normalizeWhitespace(stripRolePrefix(text)).toLowerCase()
   if (!lower) return false
 
   return /\b(i am|i'm|i was|i have|i had|i need|i want|i wanted|i prefer|i like|i love|i hate|i dislike|i use|i used|i work|i worked|i live|i lived|i moved|i moved to|i changed|i switched|i started|my preference|my project|my stack|my team|my name|my email|my address|my phone|remind me|follow up|todo|to do|need to|must|should|always|never|currently|right now)\b/.test(lower)
 }
 
 function isEphemeralQuestion(text: string): boolean {
-  const normalized = normalizeWhitespace(text)
+  const normalized = normalizeWhitespace(stripRolePrefix(text))
   const lower = normalized.toLowerCase()
   if (!lower.endsWith('?')) return false
   if (normalized.length > 80) return false
@@ -186,9 +197,58 @@ function keywordOverlap(queryTokens: Set<string>, text: string): number {
   return matches / queryTokens.size
 }
 
+function lexicalCandidateLimit(queryType: QueryType): number {
+  if (queryType === 'fact') return 8
+  if (queryType === 'rule') return 6
+  if (queryType === 'state') return 3
+  return 0
+}
+
+function lexicalInstructionLimit(queryType: QueryType): number {
+  return queryType === 'rule' ? 4 : 0
+}
+
 function isEventLike(text: string): boolean {
   const lower = stripPrefix(text).toLowerCase()
   return /\b(today|yesterday|tomorrow|before|after|first|last|earlier|later|when|then|started|stopped|moved|changed|switched|installed|built|finished|went|migrated|became)\b/.test(lower)
+}
+
+function isInstructionLike(text: string): boolean {
+  const lower = stripPrefix(text).toLowerCase()
+  if (/\b(?:must|never|always|do not|don't|avoid|please|make sure|ensure|be sure|follow|remember to|required to)\b/.test(lower)) {
+    return true
+  }
+  if (/\bshould\b/.test(lower)) {
+    return /\b(?:user|we|you|assistant|system)\b/.test(lower) || /\b(?:for this project|for the project|when replying|when responding|in this app|in this project)\b/.test(lower)
+  }
+  return false
+}
+
+function semanticFingerprint(text: string): string {
+  return stripRolePrefix(stripPrefix(text))
+    .toLowerCase()
+    .replace(/\b(working from home|work from home|wfh)\b/g, 'remote work')
+    .replace(/\b(likes|like|loves|love|prefers|prefer|wants|want|uses|use)\b/g, 'positive')
+    .replace(/\b(hates|hate|dislikes|dislike|avoids|avoid|never)\b/g, 'negative')
+    .replace(/[^\w\s]/g, ' ')
+    .replace(/\b(the|a|an|to|for|with|from|is|are|was|were|again|really|strongly|absolutely|currently|now|this|that)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function instructionKeyForFact(text: string): string {
+  const lower = stripPrefix(text).toLowerCase()
+  if (/\bapi key\b/.test(lower)) return 'instruction:api_key'
+  if (/\bflask route|routes\b/.test(lower)) return 'instruction:flask_routes'
+  if (/\bhttp requests?\b/.test(lower) && /\bflask\b/.test(lower)) return 'instruction:flask_routes'
+
+  const topic = normalizeWhitespace(
+    lower
+      .replace(/\b(?:must|should|never|always|do not|don't|avoid|please|make sure|ensure|be sure|use|follow|keep|remember to|need to|the user|user|we|they|you)\b/g, ' ')
+      .replace(/[^\w\s]/g, ' ')
+  )
+
+  return `instruction:${(topic || 'general').slice(0, 48).trim() || 'general'}`
 }
 
 function stateKeyForFact(text: string): string | null {
@@ -200,7 +260,6 @@ function stateKeyForFact(text: string): string | null {
   if (/\bflask route|routes\b/.test(lower)) return 'state:flask_routes'
   if (/\bhttp requests?\b/.test(lower) && /\bflask\b/.test(lower)) return 'state:flask_routes'
   if (topic) return `state:${topic}`
-  if (/\bmust|should|never|always|rule|policy|constraint|allowed|avoid\b/.test(lower)) return 'state:instruction'
   if (/\bneed to|todo|follow up|pending|open loop|remind\b/.test(lower)) return `state:open_loop:${normalizeWhitespace(lower).slice(0, 32)}`
 
   if (/\b(?:live|lives|living|located|based|moved)\b/.test(lower)) return 'state:location'
@@ -212,6 +271,13 @@ function stateKeyForFact(text: string): string | null {
 function deriveMemory(text: string): DerivedMemory {
   if (text.startsWith('[event]') || isEventLike(text)) {
     return { text, memoryType: 'event', scratchpadKey: null }
+  }
+  if (text.startsWith('[instruction]') || isInstructionLike(text)) {
+    return {
+      text,
+      memoryType: 'instruction',
+      scratchpadKey: instructionKeyForFact(text),
+    }
   }
   return {
     text,
@@ -226,7 +292,37 @@ function deriveMemories(raw: string, extractedFacts: string[]): DerivedMemory[] 
     ...syntheticFacts,
     ...extractedFacts.map(fact => `[fact] ${sanitizeFact(fact)}`),
   ]))
-  return facts.map(deriveMemory)
+  return dedupeDerivedMemories(facts.map(deriveMemory))
+}
+
+function preferredDerivedMemory(current: DerivedMemory, next: DerivedMemory): DerivedMemory {
+  if (current.memoryType === 'event' && next.memoryType === 'event') {
+    if (current.text.startsWith('[event]') && !next.text.startsWith('[event]')) return current
+    if (next.text.startsWith('[event]') && !current.text.startsWith('[event]')) return next
+  }
+
+  const currentLen = stripPrefix(current.text).length
+  const nextLen = stripPrefix(next.text).length
+  return nextLen > currentLen ? { ...next, scratchpadKey: next.scratchpadKey ?? current.scratchpadKey } : { ...current, scratchpadKey: current.scratchpadKey ?? next.scratchpadKey }
+}
+
+function dedupeDerivedMemories(items: DerivedMemory[]): DerivedMemory[] {
+  const merged = new Map<string, DerivedMemory>()
+
+  for (const item of items) {
+    const fingerprint = semanticFingerprint(item.text)
+    const key = item.memoryType === 'event'
+      ? `event:${fingerprint}`
+      : `${item.memoryType}:${item.scratchpadKey ?? fingerprint}`
+    const existing = merged.get(key)
+    if (!existing) {
+      merged.set(key, item)
+      continue
+    }
+    merged.set(key, preferredDerivedMemory(existing, item))
+  }
+
+  return Array.from(merged.values())
 }
 
 function scratchpadRowsToMemories(scopeId: string, rows: ScratchpadRow[]): MemoryRow[] {
@@ -338,7 +434,7 @@ function classifyQueryType(task: string): QueryType {
   const lower = task.toLowerCase()
   if (/\b(contradict|contradiction|clarify|which statement|which is correct|change(?:d)? my mind|used to|but now|earlier you said|later you said|have i|did i|do i|am i)\b/.test(lower)) return 'conflict'
   if (/\b(before|after|first|last|earlier|later|when|timeline|order|now|currently|current|recent|latest|today|yesterday|tomorrow)\b/.test(lower)) return 'time'
-  if (/\bmust|should|never|always|rule|policy|constraint|allowed\b/.test(lower)) return 'rule'
+  if (/\b(?:must|should|never|always|rule|policy|constraint|allowed|instruction|follow|following|required|required to|supposed to|need to|what do i do|what should i do|what should we do|what should i use)\b/.test(lower)) return 'rule'
   if (/\b(theme|dark mode|light mode|ui preference|design preference|prefer|preference|likes?|dislikes?|favorite|favourite|wants?)\b/.test(lower)) return 'state'
   return 'fact'
 }
@@ -362,6 +458,9 @@ function detectSection(row: MemoryRow, lane: Lane, queryType: QueryType): Packed
   if (queryType === 'time' || queryType === 'conflict' || lane === 'event') {
     return 'relevant_events'
   }
+  if (row.memory_type === 'instruction') {
+    return 'rules_preferences'
+  }
   if (queryType === 'rule' || /\bprefer|likes?|dislikes?|favorite|favourite|wants?|always|never|must|should|rule|policy|constraint\b/.test(lower)) {
     return 'rules_preferences'
   }
@@ -378,6 +477,10 @@ function strengthWeight(strength: number): number {
 function baseTypePriority(row: MemoryRow, lane: Lane, queryType: QueryType): number {
   if (lane === 'scratchpad') return 0.22
   if (row.memory_type === 'summary') return 0.14
+  if (row.memory_type === 'instruction') {
+    if (queryType === 'rule') return 0.26
+    if (queryType === 'fact' || queryType === 'state') return 0.12
+  }
   if (queryType === 'time' && row.memory_type === 'event') return 0.18
   if (queryType === 'conflict' && row.memory_type === 'state') return 0.18
   if ((queryType === 'state' || queryType === 'rule' || queryType === 'fact') && row.memory_type === 'state') return 0.12
@@ -417,6 +520,7 @@ function scoreMemories(
       const section = detectSection(row, lane, queryType)
       const { topic, polarity } = polarityAndTopic(row.text)
       const similarity = row.similarity ?? 0
+      const lexicalScore = row.lexical_score ?? 0
       const entityMatches = row.entity_matches ?? 0
       const entityBoost = entityMatches > 0 ? Math.min(1, entityMatches / 3) : 0
       const lexicalOverlap = keywordOverlap(queryTokens, row.text)
@@ -435,7 +539,8 @@ function scoreMemories(
       const activeBias = queryType === 'conflict' && versionStatus === 'active' ? 0.06 : 0
       const score =
         similarity * (queryType === 'conflict' ? 0.24 : queryType === 'fact' ? 0.44 : 0.38) +
-        lexicalOverlap * (queryType === 'conflict' ? 0.24 : 0.14) +
+        lexicalScore * (queryType === 'fact' ? 0.18 : queryType === 'rule' ? 0.12 : queryType === 'state' ? 0.04 : 0) +
+        lexicalOverlap * (queryType === 'fact' ? 0.12 : queryType === 'rule' ? 0.08 : queryType === 'state' ? 0.04 : queryType === 'conflict' ? 0.18 : 0.03) +
         entityBoost * (queryType === 'fact' ? 0.18 : 0.16) +
         strengthWeight(strength) * (queryType === 'time' ? 0.04 : 0.1) +
         recency * (queryType === 'time' ? 0.16 : queryType === 'conflict' ? 0.1 : 0.08) +
@@ -443,12 +548,45 @@ function scoreMemories(
         baseTypePriority(row, lane, queryType) +
         conflictBoost +
         activeBias +
+        (row.memory_type === 'instruction' && queryType === 'rule' ? 0.18 : 0) +
+        (row.memory_type === 'instruction' && lexicalOverlap > 0 ? 0.08 : 0) +
         (polarity !== 0 && (queryType === 'state' || queryType === 'rule' || queryType === 'conflict') ? 0.03 : 0) -
         (queryType === 'conflict' ? penalty * 0.15 : penalty)
 
       return { row, strength, score, lane, section, topic, polarity, entityMatches, versionStatus: versionStatus as 'active' | 'historical' }
     })
     .sort((a, b) => b.score - a.score)
+}
+
+function filterLexicalNoise(rows: MemoryRow[], queryText: string, queryType: QueryType): MemoryRow[] {
+  const queryTokens = keywordTokens(queryText)
+
+  return rows.filter(row => {
+    const lexicalScore = row.lexical_score ?? 0
+    const similarity = row.similarity ?? 0
+    const entityMatches = row.entity_matches ?? 0
+    const lexicalOnly = lexicalScore > 0 && similarity === 0 && entityMatches === 0
+    if (!lexicalOnly) return true
+
+    const overlap = keywordOverlap(queryTokens, row.text)
+
+    if (queryType === 'fact') {
+      return lexicalScore >= 0.18 || overlap >= 0.34
+    }
+
+    if (queryType === 'rule') {
+      if (row.memory_type === 'instruction') {
+        return lexicalScore >= 0.08 || overlap >= 0.2
+      }
+      return lexicalScore >= 0.18 && overlap >= 0.34
+    }
+
+    if (queryType === 'state') {
+      return lexicalScore >= 0.22 && overlap >= 0.4
+    }
+
+    return false
+  })
 }
 
 function summarizeLaneCounts(items: Array<{ lane: Lane }>): TraceLaneCounts {
@@ -712,15 +850,29 @@ async function loadRankedMemories(
   const queryType = classifyQueryType(queryText)
   const queryEmbedding = await llm.embed(queryText)
   const queryEntities = await llm.extractEntities(queryText)
-  const [semanticRows, entityRows, scratchpad] = await Promise.all([
+  const lexicalLimit = lexicalCandidateLimit(queryType)
+  const lexicalInstructionRowsLimit = lexicalInstructionLimit(queryType)
+  const [semanticRows, entityRows, lexicalRows, lexicalInstructionRows, scratchpad] = await Promise.all([
     store.search(scopeId, queryEmbedding, 20),
     store.searchByEntityMatches(scopeId, queryEntities, 12),
+    lexicalLimit > 0
+      ? store.searchLexical(scopeId, queryText, lexicalLimit)
+      : Promise.resolve([]),
+    lexicalInstructionRowsLimit > 0
+      ? store.searchLexical(scopeId, queryText, lexicalInstructionRowsLimit, { memoryType: 'instruction' })
+      : Promise.resolve([]),
     store.getScratchpad(scopeId),
   ])
-  const rows = mergeRows(
-    mergeRows(semanticRows, entityRows),
+  const rows = filterLexicalNoise(mergeRows(
+    mergeRows(
+      mergeRows(
+        mergeRows(semanticRows, entityRows),
+        lexicalRows
+      ),
+      lexicalInstructionRows
+    ),
     scratchpadRowsToMemories(scopeId, scratchpad)
-  )
+  ), queryText, queryType)
   const versionKeys = queryType === 'conflict'
     ? Array.from(new Set([
       ...rows

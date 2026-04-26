@@ -8,6 +8,9 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "dev": "tsx src/server.ts",
+    "infra:up": "docker compose -f docker-compose.local.yml up -d",
+    "infra:down": "docker compose -f docker-compose.local.yml down",
+    "infra:reset": "docker compose -f docker-compose.local.yml down -v",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:integration": "vitest run tests/index.test.ts"

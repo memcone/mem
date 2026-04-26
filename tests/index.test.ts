@@ -5,6 +5,7 @@ vi.mock('../src/store', () => ({
     init: vi.fn().mockResolvedValue(undefined),
     insert: vi.fn().mockResolvedValue(['id-1']),
     search: vi.fn().mockResolvedValue([]),
+    searchLexical: vi.fn().mockResolvedValue([]),
     searchByEntityMatches: vi.fn().mockResolvedValue([]),
     getTopicVersions: vi.fn().mockResolvedValue([]),
     upsertEntities: vi.fn().mockResolvedValue(undefined),

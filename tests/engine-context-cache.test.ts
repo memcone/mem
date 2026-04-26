@@ -7,6 +7,7 @@ import type { Cache } from '../src/cache'
 function makeStore(rows: any[] = []): Store {
   return {
     search: vi.fn().mockResolvedValue(rows),
+    searchLexical: vi.fn().mockResolvedValue([]),
     searchByEntityMatches: vi.fn().mockResolvedValue([]),
     getTopicVersions: vi.fn().mockResolvedValue([]),
     insert: vi.fn().mockResolvedValue(['id-1']),

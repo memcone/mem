@@ -87,9 +87,14 @@ export class OpenAISemanticLLM implements SemanticLLM {
         {
           role: 'system',
           content:
-            'Extract discrete, standalone semantic facts from the input. ' +
-            'Each fact should be a complete, persistent statement about the user or entity. ' +
-            'Ignore temporary actions. Return one fact per line. No numbering, no explanation.',
+            'Extract memory-worthy facts from the input. ' +
+            'Return discrete, standalone statements that could be queried later. ' +
+            'Preserve exact technical details when present: file names, frameworks, packages, APIs, bugs, tasks, decisions, constraints, quoted phrases, project names, and named entities. ' +
+            'Keep assistant-confirmed or tool-confirmed facts when they change project or user state. ' +
+            'Merge closely related details from the same rule, task, or project state into one fact instead of splitting them into many tiny variants. ' +
+            'Do not collapse multiple concrete details into one vague summary if the details could be asked about separately. ' +
+            'Avoid producing near-duplicate lines that only differ by minor wording. ' +
+            'Ignore pure filler acknowledgements. Return one fact per line. No numbering, no explanation.',
         },
         { role: 'user', content: raw },
       ],
