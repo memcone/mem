@@ -2,7 +2,7 @@
 
 <div align="center">
 
-Backend memory engine for [Memcone](https://memcone.com).
+Backend memory service for [Memcone](https://memcone.com).
 
 <h3>
 
