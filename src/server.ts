@@ -1,5 +1,6 @@
 import express from 'express'
 import { Pool } from 'pg'
+import { createHash } from 'node:crypto'
 import { createMem } from './index'
 import type { CallType } from './metrics'
 
@@ -21,10 +22,44 @@ function errorMessage(error: unknown): string {
   return 'Internal server error'
 }
 
+function hashApiKey(key: string): string {
+  return createHash('sha256').update(key).digest('hex')
+}
+
 async function validateApiKey(key: string): Promise<string | null> {
-  const { rows } = await pool.query('SELECT user_id FROM api_key WHERE key = $1', [key])
+  const hashed = hashApiKey(key)
+  let rows: Array<{ user_id: string }>
+
+  try {
+    const result = await pool.query(
+      'SELECT user_id FROM api_key WHERE key_hash = $1 OR key = $2 LIMIT 1',
+      [hashed, key]
+    )
+    rows = result.rows
+  } catch (error) {
+    const pgError = error as { code?: string }
+    if (pgError.code !== '42703') throw error
+    const result = await pool.query('SELECT user_id FROM api_key WHERE key = $1 LIMIT 1', [key])
+    rows = result.rows
+  }
+
   if (!rows.length) return null
-  pool.query('UPDATE api_key SET request_count = request_count + 1, last_used_at = NOW() WHERE key = $1', [key]).catch(console.error)
+
+  pool.query(
+    'UPDATE api_key SET request_count = request_count + 1, last_used_at = NOW() WHERE key_hash = $1 OR key = $2',
+    [hashed, key]
+  ).catch(error => {
+    const pgError = error as { code?: string }
+    if (pgError.code === '42703') {
+      pool.query(
+        'UPDATE api_key SET request_count = request_count + 1, last_used_at = NOW() WHERE key = $1',
+        [key]
+      ).catch(console.error)
+      return
+    }
+    console.error(error)
+  })
+
   return rows[0].user_id as string
 }
 

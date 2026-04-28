@@ -26,12 +26,12 @@ describe('Metrics', () => {
     expect(UNITS.recall).toBe(1)
   })
 
-  it('FREE_UNITS is 10000', () => {
-    expect(FREE_UNITS).toBe(10_000)
+  it('FREE_UNITS is 200', () => {
+    expect(FREE_UNITS).toBe(200)
   })
 
-  it('UNIT_PRICE_PER_1K is 0.40', () => {
-    expect(UNIT_PRICE_PER_1K).toBe(0.40)
+  it('UNIT_PRICE_PER_1K is 0.80', () => {
+    expect(UNIT_PRICE_PER_1K).toBe(0.80)
   })
 
   it('record increments units and hits', async () => {
@@ -84,8 +84,8 @@ describe('Metrics', () => {
   })
 
   it('estimatedBillDollars charges only overage above free tier', async () => {
-    // 10001 units → 1 unit overage → $0.40/1000 = $0.0004
-    const s = await metrics.summaryFromUnits(10_001)
-    expect(s.estimatedBillDollars).toBeCloseTo(0.40 / 1000)
+    // 201 units -> 1 unit overage -> $0.80/1000 = $0.0008
+    const s = await metrics.summaryFromUnits(201)
+    expect(s.estimatedBillDollars).toBeCloseTo(0.80 / 1000)
   })
 })

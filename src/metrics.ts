@@ -10,8 +10,8 @@ export const UNITS: Record<CallType, number> = {
   recall: 1,
 }
 
-export const FREE_UNITS = 10_000
-export const UNIT_PRICE_PER_1K = 0.40
+export const FREE_UNITS = 200
+export const UNIT_PRICE_PER_1K = 0.80
 
 export interface MetricsSummary {
   units: number

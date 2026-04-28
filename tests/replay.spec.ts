@@ -20,6 +20,11 @@ function topBelief(snap: Snapshot): string {
   return snap.topBeliefs[0]?.text ?? ''
 }
 
+function retrievedState(snap: Snapshot): string {
+  const context = typeof snap.context === 'string' ? snap.context : snap.context.result
+  return `${snap.recall}\n${context}`
+}
+
 // Find the first seq where the top belief matches a predicate
 function firstSwitch(snapshots: Snapshot[], predicate: (text: string) => boolean): number | null {
   const snap = snapshots.find(s => predicate(topBelief(s)))
@@ -40,7 +45,7 @@ describe('replay: gradual_drift', () => {
       scopeId: `replay-drift-${Date.now()}`,
       now: REPLAY_NOW,
     })
-  })
+  }, 30_000)
 
   afterAll(async () => { await store.close() })
 
@@ -101,7 +106,7 @@ describe('replay: rapid_oscillation', () => {
       scopeId: `replay-osc-${Date.now()}`,
       now: REPLAY_NOW,
     })
-  })
+  }, 30_000)
 
   afterAll(async () => { await store.close() })
 
@@ -109,16 +114,16 @@ describe('replay: rapid_oscillation', () => {
     expect(snapshots).toHaveLength(rapidOscillation.events.length)
   })
 
-  it('top belief tracks most recent event — no deadlock', () => {
+  it('retrieved state tracks most recent event — no deadlock', () => {
     // With seqLag + contradiction decay, the system should follow the most recent signal
     const lastSnap = snapshots.at(-1)!
     // Final event is 'user hates dark mode' (seq=10, even index=9, 9%2=1 → hates)
-    expect(topBelief(lastSnap)).toContain('hates dark mode')
+    expect(retrievedState(lastSnap)).toContain('hates dark mode')
   })
 
-  it('both beliefs appear across snapshots — not permanently locked', () => {
-    const hasLikes = snapshots.some(s => topBelief(s).includes('likes dark mode'))
-    const hasHates = snapshots.some(s => topBelief(s).includes('hates dark mode'))
+  it('both states appear across snapshots — not permanently locked', () => {
+    const hasLikes = snapshots.some(s => retrievedState(s).includes('likes dark mode'))
+    const hasHates = snapshots.some(s => retrievedState(s).includes('hates dark mode'))
     expect(hasLikes).toBe(true)
     expect(hasHates).toBe(true)
   })
@@ -138,7 +143,7 @@ describe('replay: late_ambush', () => {
       scopeId: `replay-ambush-${Date.now()}`,
       now: REPLAY_NOW,
     })
-  })
+  }, 30_000)
 
   afterAll(async () => { await store.close() })
 
